@@ -84,131 +84,117 @@ export function generateInpFile(nodes: WhamoNode[], edges: WhamoEdge[]) {
 
   connectivityLines.forEach(line => addL(line));
 
-  // NODE Selection Algorithm
+  // NODE Selection Algorithm according to Comprehensive Guide
   const nodesToInclude = new Set<string>();
 
-  // Parse connectivity to identify chains and transitions
-  const elementLinks: { id: string, from: string, to: string, type?: string }[] = [];
-  const nodeConnections: Record<string, { incoming: string[], outgoing: string[] }> = {};
+  // 1. Prepare data structures for analysis
+  const nodeConnections: Record<string, { incoming: { elemId: string, edge: WhamoEdge }[], outgoing: { elemId: string, edge: WhamoEdge }[] }> = {};
+  const specialElementNodes = new Set<string>(); // A1, A3, A4
+  const junctionNodes = new Set<string>(); // A2
+  const nodesInOutputRequests = new Set<string>(); // B2
 
-  connectivityLines.forEach(line => {
-    const linkMatch = line.match(/^ELEM\s+(\S+)\s+LINK\s+(\S+)\s+(\S+)/);
-    if (linkMatch) {
-      const elementId = linkMatch[1];
-      const from = linkMatch[2];
-      const to = linkMatch[3];
-
-      elementLinks.push({ id: elementId, from, to });
-
-      if (!nodeConnections[from]) nodeConnections[from] = { incoming: [], outgoing: [] };
-      if (!nodeConnections[to]) nodeConnections[to] = { incoming: [], outgoing: [] };
-
-      nodeConnections[from].outgoing.push(elementId);
-      nodeConnections[to].incoming.push(elementId);
+  // Identify nodes with special elements (A1, A3, A4)
+  nodes.forEach(node => {
+    const actualNodeId = node.data.nodeNumber?.toString() || node.id;
+    if (node.type === 'reservoir' || node.type === 'surgeTank' || node.type === 'flowBoundary') {
+      specialElementNodes.add(actualNodeId);
+    }
+    if (node.type === 'junction') {
+      junctionNodes.add(actualNodeId);
     }
   });
 
-  // Keep track of branch patterns to identify parallel branches
-  // A pattern is defined by the sequence of element IDs from a junction to a terminal node
-  const branchPatterns = new Set<string>();
+  // Build connection map
+  edges.forEach(edge => {
+    const fromNode = nodes.find(n => n.id === edge.source);
+    const toNode = nodes.find(n => n.id === edge.target);
+    if (!fromNode || !toNode) return;
 
-  const allNodeIds = Array.from(new Set([
+    const fromId = fromNode.data.nodeNumber?.toString() || fromNode.id;
+    const toId = toNode.data.nodeNumber?.toString() || toNode.id;
+    const elemId = edge.data?.label || edge.id;
+
+    if (!nodeConnections[fromId]) nodeConnections[fromId] = { incoming: [], outgoing: [] };
+    if (!nodeConnections[toId]) nodeConnections[toId] = { incoming: [], outgoing: [] };
+
+    nodeConnections[fromId].outgoing.push({ elemId, edge });
+    nodeConnections[toId].incoming.push({ elemId, edge });
+  });
+
+  // Identify nodes in output requests (B2)
+  state.outputRequests.forEach(req => {
+    if (req.elementType === 'node') {
+      const node = nodes.find(n => n.id === req.elementId);
+      if (node) {
+        nodesInOutputRequests.add(node.data.nodeNumber?.toString() || node.id);
+      }
+    }
+  });
+
+  // 2. Apply Rules
+  const allActualNodeIds = new Set([
     ...nodes.map(n => n.data.nodeNumber?.toString() || n.id),
-    ...Array.from(nodeIdsWithSpecialElements)
-  ]));
+    ...Array.from(specialElementNodes)
+  ]);
 
-  allNodeIds.forEach(nodeId => {
+  allActualNodeIds.forEach(nodeId => {
     const connections = nodeConnections[nodeId] || { incoming: [], outgoing: [] };
-    const hasSpecial = nodeIdsWithSpecialElements.has(nodeId);
+    const node = nodes.find(n => (n.data.nodeNumber?.toString() || n.id) === nodeId);
+    if (!node) return;
 
-    // RULE 1: ALWAYS INCLUDE - Nodes with Special Elements
-    if (hasSpecial) {
+    // --- CATEGORY A: MANDATORY ---
+
+    // A1, A3, A4: Special Elements
+    if (specialElementNodes.has(nodeId)) {
       nodesToInclude.add(nodeId);
       return;
     }
 
-    // RULE 2: ALWAYS SKIP - Intermediate Nodes in Multi-Link Chains
-    // Skip if SAME element ID appears in both incoming and outgoing
-    if (connections.incoming.length === 1 && connections.outgoing.length === 1 &&
-        connections.incoming[0] === connections.outgoing[0]) {
+    // A2: Junctions (explicit or by connectivity)
+    if (junctionNodes.has(nodeId) || connections.incoming.length + connections.outgoing.length > 2) {
+      nodesToInclude.add(nodeId);
       return;
     }
 
-    // RULE 3: SELECTIVE INCLUSION - Transition Nodes
-    if (connections.incoming.length > 0 && connections.outgoing.length > 0) {
-      const inElem = connections.incoming[0];
-      const outElem = connections.outgoing[0];
+    // A5: First node after reservoir
+    const isFirstAfterReservoir = connections.incoming.some(inc => {
+      const sourceNodeId = nodes.find(n => n.id === inc.edge.source)?.data.nodeNumber?.toString() || inc.edge.source;
+      return specialElementNodes.has(sourceNodeId) && nodes.find(n => n.id === inc.edge.source)?.type === 'reservoir';
+    });
+    if (isFirstAfterReservoir) {
+      nodesToInclude.add(nodeId);
+      return;
+    }
 
-      if (inElem !== outElem) {
-        // RULE 3B: SKIP - Specific Transition Patterns
-        
-        // Dynamic Terminal Transition Check: 
-        // Identify the last transition before a special element (FB, etc.)
-        // In the reference files, this is C8 -> C9 skip before FB1/FB2.
-        // We can generalize this: if outgoing leads directly to a terminal node
-        // and that element is the last one in a sequence.
-        
-        const isTerminalTransition = connections.outgoing.every(outE => {
-          const link = elementLinks.find(l => l.from === nodeId && l.id === outE);
-          if (!link) return false;
-          const nextNodeConnections = nodeConnections[link.to];
-          return nextNodeConnections && nextNodeConnections.outgoing.length === 0 && nodeIdsWithSpecialElements.has(link.to);
-        });
+    // --- CATEGORY B: CONDITIONAL ---
 
-        // The specific C8 -> C9 skip pattern
-        if (inElem.match(/^C\d+$/) && outElem.match(/^C\d+$/)) {
-          const inNum = parseInt(inElem.substring(1));
-          const outNum = parseInt(outElem.substring(1));
-          if (outNum === inNum + 1 && isTerminalTransition) {
-            return;
-          }
-        }
+    // B2: Output requests
+    if (nodesInOutputRequests.has(nodeId)) {
+      nodesToInclude.add(nodeId);
+      return;
+    }
 
-        // Case 2: Parallel Branches
-        // Check if this node is the first node after a junction
-        const incomingEdges = edges.filter(e => {
-          const toNode = nodes.find(n => n.id === e.target);
-          return (toNode?.data.nodeNumber?.toString() || toNode?.id) === nodeId;
-        });
-
-        const isAfterJunction = incomingEdges.some(e => {
-          const fromNode = nodes.find(n => n.id === e.source);
-          const fromId = fromNode?.data.nodeNumber?.toString() || fromNode?.id;
-          return fromId && nodeIdsWithSpecialElements.has(fromId) && 
-                 nodeConnections[fromId]?.outgoing.length > 1;
-        });
-
-        if (isAfterJunction) {
-          // Find the branch sequence starting from this node
-          let currentId = nodeId;
-          let pattern = "";
-          const visitedInPattern = new Set<string>();
-          
-          while (currentId && !visitedInPattern.has(currentId)) {
-            visitedInPattern.add(currentId);
-            const currConns = nodeConnections[currentId];
-            if (!currConns || currConns.outgoing.length !== 1) break;
-            const elem = currConns.outgoing[0];
-            pattern += (pattern ? "->" : "") + elem;
-            
-            const link = elementLinks.find(l => l.from === currentId && l.id === elem);
-            if (!link) break;
-            currentId = link.to;
-          }
-
-          if (pattern) {
-            if (branchPatterns.has(pattern)) {
-              // SKIP - Duplicate parallel branch
-              return;
-            }
-            branchPatterns.add(pattern);
-          }
-        }
-
-        // If it passed all skip rules, include it
+    // B1: Major transitions (diameter change etc)
+    if (connections.incoming.length === 1 && connections.outgoing.length === 1) {
+      const inEdge = connections.incoming[0].edge;
+      const outEdge = connections.outgoing[0].edge;
+      if (inEdge.data?.diameter !== outEdge.data?.diameter || 
+          inEdge.data?.celerity !== outEdge.data?.celerity ||
+          inEdge.data?.friction !== outEdge.data?.friction) {
         nodesToInclude.add(nodeId);
+        return;
       }
     }
+
+    // B3: Branch start/end nodes
+    // Covered by junction check A2 usually, but adding for completeness if a branch doesn't have >2 connections but is a split
+    if (connections.outgoing.length > 1 || connections.incoming.length > 1) {
+      nodesToInclude.add(nodeId);
+      return;
+    }
+
+    // --- CATEGORY C: SKIP ---
+    // If we reach here, it's likely an intermediate node (C1) or through-flow (C4) or dummy only (C2)
   });
 
   addL('');

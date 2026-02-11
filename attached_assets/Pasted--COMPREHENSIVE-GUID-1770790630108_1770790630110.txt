@@ -1,0 +1,1111 @@
+================================================================================
+COMPREHENSIVE GUIDE: NODE ELEVATION DECLARATION LOGIC FOR .INP FILES
+HYDRAULIC TRANSIENT ANALYSIS SYSTEMS
+================================================================================
+
+DOCUMENT PURPOSE:
+This document provides COMPLETE, DETAILED rules for determining which nodes in a 
+hydraulic network require elevation (ELEV) declarations in .INP input files for 
+transient flow analysis software. This applies to ANY network topology you generate.
+
+================================================================================
+SECTION 1: FUNDAMENTAL CONCEPTS
+================================================================================
+
+1.1 WHAT IS A NODE?
+-------------------
+A node is a point in the hydraulic network where:
+- Pipes/conduits connect
+- Flow splits or merges
+- Equipment (pumps, turbines, valves) is located
+- Boundary conditions are applied
+
+1.2 WHY ONLY SOME NODES NEED ELEVATIONS?
+-----------------------------------------
+The transient analysis software uses elevations to calculate:
+- Hydraulic head (pressure + elevation)
+- Pressure variations during transients
+- Flow velocities and accelerations
+
+However, NOT all nodes require explicit elevation declarations because:
+- Intermediate nodes in straight pipe sections have elevations interpolated
+- Some nodes are purely for numerical computation (dummy nodes)
+- Some nodes are automatically handled by the software
+
+1.3 THE GOLDEN RULE
+-------------------
+**DECLARE ELEVATIONS FOR NODES THAT REPRESENT ACTUAL PHYSICAL LOCATIONS 
+WHERE THE SOFTWARE NEEDS TO CALCULATE PRESSURE HEAD**
+
+Skip nodes that are:
+- Computational artifacts
+- Intermediate points in uniform pipe sections
+- Automatically handled by element definitions
+
+================================================================================
+SECTION 2: DETAILED NODE CLASSIFICATION SYSTEM
+================================================================================
+
+2.1 CATEGORY A: MANDATORY ELEVATION NODES (ALWAYS INCLUDE)
+-----------------------------------------------------------
+
+These nodes MUST have elevation declarations in ALL cases:
+
+A1. RESERVOIR CONNECTION NODES
+   Definition: Nodes where reservoir elements attach
+   Why needed: Define the water source elevation for head calculations
+   
+   Identification in SYSTEM section:
+   - Look for: "ELEM [ID] AT [N]" where [ID] is a RESERVOIR type
+   - Common patterns: "ELEM RES AT 1", "ELEM HW AT 1", "ELEM RESERVOIR AT 1"
+   
+   Example from file:
+   ```
+   ELEM HW AT 1          ← Node 1 is reservoir connection
+   ELEM HW AT 21         ← Node 21 is reservoir connection
+   ELEM HW AT 31         ← Node 31 is reservoir connection
+   ```
+   Required declarations:
+   ```
+   NODE 1 ELEV 5719.0
+   NODE 21 ELEV 5719.0
+   NODE 31 ELEV 5719.0
+   ```
+   
+   Special notes:
+   - Multiple reservoirs → multiple reservoir nodes
+   - Elevation typically matches or is close to RESERVOIR ELEV property
+   - This is your system's reference point for all head calculations
+
+A2. JUNCTION NODES
+   Definition: Nodes explicitly declared as junctions in SYSTEM section
+   Why needed: Flow splits/merges require head calculation at exact junction point
+   
+   Identification in SYSTEM section:
+   - Look for: "JUNCTION AT [N]"
+   - These are ALWAYS explicitly marked
+   
+   Example from file:
+   ```
+   JUNCTION AT 8         ← Must declare NODE 8 ELEV
+   JUNCTION AT 9         ← Must declare NODE 9 ELEV
+   JUNCTION AT 12        ← Must declare NODE 12 ELEV
+   ```
+   Required declarations:
+   ```
+   NODE 8 ELEV 5628.5
+   NODE 9 ELEV 5628.5
+   NODE 12 ELEV 5627.7
+   ```
+   
+   Junction identification rules:
+   - If line says "JUNCTION AT X" → Node X needs elevation
+   - No exceptions to this rule
+   - Junctions are where multiple flow paths meet or diverge
+
+A3. FLOW BOUNDARY CONDITION NODES
+   Definition: Nodes where FLOWBC, turbines, valves, or similar elements attach
+   Why needed: These are system endpoints where flow/pressure must be calculated
+   
+   Identification in SYSTEM section:
+   - Look for: "ELEM [FBC_ID] AT [N]" where element type is boundary condition
+   - Common patterns: "ELEM FB1 AT 14", "ELEM FBC1 AT 18", "ELEM VALVE AT 20"
+   
+   Example from file:
+   ```
+   EL FBC1 AT 18         ← Node 18 needs elevation
+   EL FBC2 AT 19         ← Node 19 needs elevation
+   EL FBC3 AT 23         ← Node 23 needs elevation
+   EL FBC4 AT 24         ← Node 24 needs elevation
+   ```
+   Required declarations:
+   ```
+   NODE 18 ELEV 4289.65
+   NODE 19 ELEV 4289.65
+   NODE 23 ELEV 4289.65
+   NODE 24 ELEV 4289.65
+   ```
+   
+   Boundary condition types to watch for:
+   - FLOWBC (flow boundary condition)
+   - FBC (flow boundary)
+   - VALVE
+   - TURBINE (if standalone element)
+   - Any element representing system outlet/terminal
+
+A4. SURGE TANK CONNECTION NODES
+   Definition: Nodes where surge tank elements connect to main system
+   Why needed: Critical for pressure surge calculations and tank level simulation
+   
+   Identification in SYSTEM section:
+   - Look for: "ELEM [ST_ID] AT [N]" where element type is SURGETANK
+   - Common patterns: "ELEM ST AT 12", "ELEM SURGETANK AT 100"
+   
+   Example from file:
+   ```
+   ELEM ST AT 12         ← Node 12 needs elevation
+   ELEM ST1 AT 100       ← Node 100 needs elevation
+   ELEM ST2 AT 200       ← Node 200 needs elevation
+   ```
+   Required declarations:
+   ```
+   NODE 12 ELEV 6166.95
+   NODE 100 ELEV 5628.5
+   NODE 200 ELEV 5628.5
+   ```
+   
+   Important notes:
+   - Node elevation typically matches surge tank ELBOTTOM value
+   - Some systems use high node numbers (100, 200) for surge tanks
+   - These nodes are critical for transient analysis accuracy
+
+A5. FIRST NODE AFTER RESERVOIR
+   Definition: The immediate downstream node after reservoir connection
+   Why needed: Provides reference point for head loss calculations in first conduit
+   
+   Identification in SYSTEM section:
+   - Find reservoir node: "ELEM RES AT 1"
+   - Find next link: "ELEM HRT LINK 1 2"
+   - Node 2 is the first node after reservoir
+   
+   Example from file:
+   ```
+   ELEM RES AT 1
+   ELEM HRT LINK 1 2     ← Node 2 is first after reservoir
+   ```
+   Required declarations:
+   ```
+   NODE 1 ELEV 6397.56   ← Reservoir node
+   NODE 2 ELEV 6296.019  ← First node after reservoir
+   ```
+   
+   Why this matters:
+   - Establishes initial head gradient
+   - Software needs explicit reference for first conduit section
+   - Common in all analyzed files
+
+2.2 CATEGORY B: CONDITIONAL ELEVATION NODES (SOMETIMES INCLUDE)
+----------------------------------------------------------------
+
+These nodes may or may not need elevations depending on network configuration:
+
+B1. MAJOR TRANSITION NODES
+   Definition: Nodes where significant system changes occur
+   When to include: 
+   - Large diameter changes (>20%)
+   - Pipe material/roughness changes
+   - Change from tunnel to penstock
+   - Change from horizontal to steep vertical sections
+   
+   Example decision process:
+   ```
+   ELEM HRT LINK 10 11    (DIAM 34.78, horizontal tunnel)
+   ELEM ORFC LINK 11 12   (DIAM 16.732, orifice section)
+   ```
+   Node 11 needs elevation → major transition from tunnel to orifice
+   
+   ```
+   NODE 11 ELEV 6137.06
+   ```
+
+B2. NODES IN OUTPUT REQUESTS
+   Definition: Nodes explicitly requested in HISTORY/PLOT sections
+   When to include: If node appears in output section, often needs elevation
+   
+   Example:
+   ```
+   HISTORY
+   NODE 13 Q HEAD PRESSURE    ← Node 13 in output
+   NODE 14 Q HEAD PRESSURE    ← Node 14 in output
+   FINISH
+   ```
+   
+   Decision: Include these nodes if they also meet other criteria
+   Output request alone doesn't mandate elevation, but suggests importance
+
+B3. BRANCH START/END NODES
+   Definition: First and last nodes of parallel flow paths
+   When to include: At branch splits and rejoin points
+   
+   Example:
+   ```
+   JUNCTION AT 17                ← Branch split
+   EL PEN1 LINK 17 18           ← Path 1
+   EL FBC1 AT 18
+   EL PEN2 LINK 17 19           ← Path 2
+   EL FBC2 AT 19
+   ```
+   
+   Required:
+   - NODE 17 (junction - always required)
+   - NODE 18 (FBC - always required)
+   - NODE 19 (FBC - always required)
+
+2.3 CATEGORY C: NODES TO SKIP (NEVER INCLUDE)
+----------------------------------------------
+
+These nodes should NOT have elevation declarations:
+
+C1. INTERMEDIATE CONDUIT NODES
+   Definition: Nodes in middle of sequential same-type conduits
+   Why skip: Software interpolates elevations along conduit length
+   
+   Example to SKIP:
+   ```
+   EL HRT LINK 1 2
+   EL HRT LINK 2 3
+   EL HRT LINK 3 4
+   EL HRT LINK 4 5
+   EL HRT LINK 5 6
+   ```
+   
+   Nodes to SKIP: 3, 4, 5, 6 (intermediate nodes)
+   Nodes to KEEP: 1 (start), 2 (first after reservoir)
+   
+   Rule: In a chain "LINK A B", "LINK B C", "LINK C D" of same element ID:
+   - Keep A (start)
+   - Skip B, C (intermediate)
+   - Keep D if it connects to different element OR is junction
+
+C2. DUMMY ELEMENT NODES
+   Definition: Nodes connected only to DUMMY conduits
+   Why skip: Dummy elements are computational artifacts with no physical meaning
+   
+   Example to SKIP:
+   ```
+   EL DUM1 LINK 11 13
+   EL DUM2 LINK 11 14
+   ```
+   
+   Analysis:
+   - Node 11 appears in other connections → KEEP if junction
+   - Node 13 only connected to DUMMY → SKIP unless it connects to real element
+   - Node 14 only connected to DUMMY → SKIP unless it connects to real element
+   
+   However, CHECK FURTHER:
+   ```
+   EL DUM1 LINK 11 13
+   JUNCTION AT 13                ← Node 13 IS a junction
+   EL HPS1 LINK 13 15           ← Node 13 connects to real conduit
+   ```
+   
+   Decision: KEEP NODE 13 because it's a junction (Category A2)
+
+C3. PURELY INTERNAL SEGMENTATION NODES
+   Definition: Nodes created automatically by NUMSEG parameter
+   Why skip: These are created internally by software for numerical stability
+   
+   Example:
+   ```
+   CONDUIT
+   ID HRT
+   LENGTH 4655.46
+   DIAM 34.78
+   NUMSEG 10          ← Creates 9 internal nodes automatically
+   FINISH
+   ```
+   
+   If conduit links "LINK 1 11", software creates internal nodes automatically
+   You do NOT declare elevations for these internal segmentation nodes
+
+C4. NODES IN STRAIGHT THROUGH-FLOW PATHS
+   Definition: Nodes with exactly one inlet and one outlet of same type
+   Why skip: No head loss calculation needed, simple flow continuation
+   
+   Example pattern to SKIP:
+   ```
+   EL C3 LINK 3 4
+   EL C3 LINK 4 5     ← Node 4: one in, one out, same element type
+   EL C3 LINK 5 6
+   ```
+   
+   Skip node 4 and 5 (through-flow nodes)
+
+================================================================================
+SECTION 3: STEP-BY-STEP ALGORITHM FOR IMPLEMENTATION
+================================================================================
+
+ALGORITHM: Determine Which Nodes Need Elevation Declarations
+-------------------------------------------------------------
+
+INPUT: SYSTEM section from .INP file
+OUTPUT: List of nodes requiring elevation declarations
+
+STEP 1: PARSE THE SYSTEM SECTION
+---------------------------------
+Read through the SYSTEM section and create data structures:
+
+A. Create a list of all node numbers mentioned
+B. Create a map of node_number → list of connections
+C. Identify special elements:
+   - Reservoirs: Elements with "AT" only (no LINK)
+   - Junctions: Lines with "JUNCTION AT"
+   - Boundaries: FLOWBC, FBC, VALVE elements with "AT"
+   - Surge tanks: SURGETANK, ST elements with "AT"
+
+Example data structure:
+```
+nodes = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, ...]
+
+connections = {
+  1: [{"type": "RESERVOIR", "direction": "at"}],
+  2: [{"type": "HRT", "direction": "from", "node": 1}, 
+      {"type": "HRT", "direction": "to", "node": 3}],
+  3: [{"type": "HRT", "direction": "from", "node": 2},
+      {"type": "HRT", "direction": "to", "node": 4}],
+  ...
+}
+
+junctions = [8, 9, 12, 15, ...]
+reservoirs = [1, 21, 31]
+boundaries = [13, 14, 19, 20]
+surge_tanks = [100, 200]
+```
+
+STEP 2: IDENTIFY MANDATORY NODES
+---------------------------------
+Create empty set: required_nodes = {}
+
+Add all nodes from these categories:
+```
+required_nodes.add(all nodes in reservoirs list)
+required_nodes.add(all nodes in junctions list)
+required_nodes.add(all nodes in boundaries list)
+required_nodes.add(all nodes in surge_tanks list)
+```
+
+STEP 3: ADD FIRST-AFTER-RESERVOIR NODES
+----------------------------------------
+For each reservoir node R:
+  Find all connections where direction is "to" from node R
+  Add the destination node to required_nodes
+
+Example:
+```
+Reservoir at node 1
+Find: ELEM HRT LINK 1 2
+Add node 2 to required_nodes
+```
+
+STEP 4: CHECK FOR CHAIN INTERRUPTIONS
+--------------------------------------
+Scan through all LINK connections sequentially:
+
+For each sequence of connections:
+  If element type changes AND not through a junction:
+    Add the transition node to required_nodes
+
+Example:
+```
+ELEM HRT LINK 10 11    (element type: HRT)
+ELEM ORFC LINK 11 12   (element type: ORFC - DIFFERENT!)
+→ Add node 11 to required_nodes
+```
+
+STEP 5: ANALYZE DUMMY CONNECTIONS
+----------------------------------
+For each DUMMY element connection:
+  Get the nodes it connects
+  For each node:
+    If node is in junctions list → keep in required_nodes
+    If node connects to non-dummy elements → keep in required_nodes
+    Otherwise → remove from required_nodes (if present)
+
+STEP 6: REMOVE INTERMEDIATE CHAIN NODES
+----------------------------------------
+For each node N in all_nodes:
+  If N in required_nodes:
+    continue (already required, don't remove)
+  
+  Get incoming connections to N
+  Get outgoing connections from N
+  
+  If exactly 1 incoming AND exactly 1 outgoing:
+    If both connections have same element type:
+      If N not in junctions:
+        If N not in boundaries:
+          → N is intermediate, confirm it's NOT in required_nodes
+
+STEP 7: FINAL VALIDATION
+-------------------------
+Check that required_nodes includes:
+✓ At least one reservoir node
+✓ All junction nodes
+✓ All boundary condition nodes
+✓ All surge tank nodes
+✓ First node(s) after reservoir(s)
+
+STEP 8: SORT AND OUTPUT
+------------------------
+Sort required_nodes in ascending numerical order
+For each node in sorted list:
+  Generate: NODE [number] ELEV [elevation_value]
+
+================================================================================
+SECTION 4: DETAILED WORKED EXAMPLES
+================================================================================
+
+EXAMPLE 1: SIMPLE LINEAR SYSTEM
+--------------------------------
+
+Input SYSTEM section:
+```
+SYSTEM
+ELEM RES AT 1
+ELEM C1 LINK 1 2
+ELEM C2 LINK 2 3
+ELEM C3 LINK 3 4
+ELEM C3 LINK 4 5
+ELEM C3 LINK 5 6
+JUNCTION AT 6
+ELEM C4 LINK 6 7
+ELEM FBC AT 7
+FINISH
+```
+
+Analysis:
+- Node 1: Reservoir (Category A1) → INCLUDE
+- Node 2: First after reservoir (Category A5) → INCLUDE
+- Node 3: Intermediate (Category C1) → SKIP
+- Node 4: Intermediate in C3 chain (Category C1) → SKIP
+- Node 5: Intermediate in C3 chain (Category C1) → SKIP
+- Node 6: Junction (Category A2) → INCLUDE
+- Node 7: Boundary condition (Category A3) → INCLUDE
+
+Output:
+```
+NODE 1 ELEV xxxx
+NODE 2 ELEV xxxx
+NODE 6 ELEV xxxx
+NODE 7 ELEV xxxx
+```
+
+EXAMPLE 2: PARALLEL PATHS
+--------------------------
+
+Input SYSTEM section:
+```
+SYSTEM
+ELEM RES AT 1
+ELEM HRT LINK 1 2
+JUNCTION AT 2
+ELEM P1 LINK 2 3
+ELEM FBC1 AT 3
+ELEM P2 LINK 2 4
+ELEM FBC2 AT 4
+FINISH
+```
+
+Analysis:
+- Node 1: Reservoir (Category A1) → INCLUDE
+- Node 2: Junction (Category A2) AND First after reservoir (Category A5) → INCLUDE
+- Node 3: Boundary condition (Category A3) → INCLUDE
+- Node 4: Boundary condition (Category A3) → INCLUDE
+
+Output:
+```
+NODE 1 ELEV xxxx
+NODE 2 ELEV xxxx
+NODE 3 ELEV xxxx
+NODE 4 ELEV xxxx
+```
+
+EXAMPLE 3: COMPLEX SYSTEM WITH SURGE TANK
+------------------------------------------
+
+Input SYSTEM section:
+```
+SYSTEM
+ELEM RES AT 1
+ELEM HRT LINK 1 2
+ELEM HRT LINK 2 3
+ELEM HRT LINK 3 4
+JUNCTION AT 4
+ELEM ORFC LINK 4 5
+ELEM ST AT 5
+ELEM PEN LINK 4 6
+ELEM PEN LINK 6 7
+ELEM FBC AT 7
+FINISH
+```
+
+Analysis:
+- Node 1: Reservoir (Category A1) → INCLUDE
+- Node 2: First after reservoir (Category A5) → INCLUDE
+- Node 3: Intermediate in HRT chain (Category C1) → SKIP
+- Node 4: Junction (Category A2) → INCLUDE
+- Node 5: Surge tank (Category A4) → INCLUDE
+- Node 6: Intermediate in PEN chain (Category C1) → SKIP
+- Node 7: Boundary condition (Category A3) → INCLUDE
+
+Output:
+```
+NODE 1 ELEV xxxx
+NODE 2 ELEV xxxx
+NODE 4 ELEV xxxx
+NODE 5 ELEV xxxx
+NODE 7 ELEV xxxx
+```
+
+EXAMPLE 4: SYSTEM WITH DUMMY ELEMENTS (FROM ACTUAL FILE)
+---------------------------------------------------------
+
+Input SYSTEM section:
+```
+SYSTEM
+EL RES AT 1
+EL HRT LINK 1 2
+EL HRT LINK 2 3
+...
+EL HRT LINK 10 11
+JUNCTION AT 11
+EL ORFC LINK 11 12
+EL ST AT 12
+EL DUM1 LINK 11 13
+JUNCTION AT 13
+EL HPS1 LINK 13 15
+EL VPS1 LINK 15 16
+EL HPS2 LINK 16 17
+JUNCTION AT 17
+EL PEN1 LINK 17 18
+EL FBC1 AT 18
+EL PEN2 LINK 17 19
+EL FBC2 AT 19
+...
+FINISH
+```
+
+Analysis:
+- Node 1: Reservoir → INCLUDE
+- Node 2: First after reservoir → INCLUDE
+- Nodes 3-10: Intermediate in HRT chain → SKIP
+- Node 11: Junction → INCLUDE
+- Node 12: Surge tank → INCLUDE (even though also connected to ORFC)
+- Node 13: Junction (even though DUM1 connects here, junction overrides) → INCLUDE
+- Node 14: Similar pattern with DUM2 → INCLUDE (if junction)
+- Node 15: Intermediate analysis needed...
+  - Connected from HPS1 (from 13)
+  - Connected to VPS1 (to 16)
+  - Different element types (HPS vs VPS) → INCLUDE
+- Node 16: Intermediate in vertical penstock...
+  - From VPS1 (15 to 16)
+  - To HPS2 (16 to 17)
+  - Different element types → INCLUDE
+- Node 17: Junction → INCLUDE
+- Node 18: Boundary condition → INCLUDE
+- Node 19: Boundary condition → INCLUDE
+
+Output:
+```
+NODE 2 ELEV 6296.019
+NODE 11 ELEV 6137.06
+NODE 13 ELEV 6137.06
+NODE 14 ELEV 6137.06
+NODE 15 ELEV 6131.815
+NODE 16 ELEV 4289.65
+NODE 17 ELEV 4289.65
+NODE 18 ELEV 4289.65
+NODE 19 ELEV 4289.65
+```
+
+Note: Node 12 not in output because surge tank elevation handled in element properties
+
+EXAMPLE 5: MULTIPLE RESERVOIRS (FROM ACTUAL FILE)
+--------------------------------------------------
+
+Input SYSTEM section:
+```
+SYSTEM
+ELEM HW AT 1
+ELEM HW AT 21
+ELEM HW AT 31
+ELEM C1 LINK 1 2
+ELEM C2 LINK 2 3
+ELEM C1 LINK 21 22
+ELEM C2 LINK 22 3
+ELEM C1 LINK 31 32
+ELEM C2 LINK 32 3
+JUNCTION AT 3
+...
+FINISH
+```
+
+Analysis:
+- Node 1: Reservoir #1 → INCLUDE
+- Node 21: Reservoir #2 → INCLUDE
+- Node 31: Reservoir #3 → INCLUDE
+- Node 2: First after reservoir #1 → INCLUDE
+- Node 22: First after reservoir #2 → analyze connections...
+  - From C1 (21 to 22)
+  - To C2 (22 to 3)
+  - Feeds into common junction → INCLUDE (transition between systems)
+- Node 32: First after reservoir #3 → similar to 22 → INCLUDE
+- Node 3: Junction (merger of three sources) → INCLUDE
+
+Output:
+```
+NODE 1 ELEV 5719.0
+NODE 2 ELEV 5719.0
+NODE 3 ELEV 5719.0
+NODE 21 ELEV 5719.0
+NODE 31 ELEV 5719.0
+...
+```
+
+Note: Nodes 22 and 32 might be skipped if they're simple through-flow, 
+but safer to include near reservoir connections.
+
+================================================================================
+SECTION 5: SPECIAL PATTERNS AND EDGE CASES
+================================================================================
+
+5.1 PATTERN: MULTIPLE PARALLEL UNITS
+-------------------------------------
+Common in pumped storage projects with multiple turbine-generator units.
+
+Pattern:
+```
+JUNCTION AT 13
+EL HPS1 LINK 13 15    ← Unit 1 path
+EL VPS1 LINK 15 16
+EL HPS2 LINK 16 17
+JUNCTION AT 17
+EL PEN1 LINK 17 18
+EL FBC1 AT 18
+EL PEN2 LINK 17 19
+EL FBC2 AT 19
+
+EL HPS3 LINK 13 20    ← Unit 2 path
+EL VPS2 LINK 20 21
+EL HPS4 LINK 21 22
+JUNCTION AT 22
+EL PEN3 LINK 22 23
+EL FBC3 AT 23
+EL PEN4 LINK 22 24
+EL FBC4 AT 24
+```
+
+Required nodes:
+- All junction nodes: 13, 17, 22
+- All boundary nodes: 18, 19, 23, 24
+- Transition nodes: 15, 16, 20, 21 (where element type changes)
+
+Logic: Each parallel path is independent, apply same rules to each
+
+5.2 PATTERN: SURGE TANK WITH ORIFICE
+-------------------------------------
+Pattern:
+```
+JUNCTION AT 11
+EL ORFC LINK 11 12     ← Orifice before surge tank
+EL ST AT 12            ← Surge tank
+```
+
+Required nodes:
+- Node 11: Junction → INCLUDE
+- Node 12: Surge tank → INCLUDE (special case in element properties)
+
+Note: Surge tank node elevation often not in main NODE section but defined
+in SURGETANK element as ELBOTTOM
+
+5.3 PATTERN: VARIABLE CROSS-SECTION CONDUITS
+---------------------------------------------
+Pattern:
+```
+CONDUIT
+ID C2
+VARIABLE
+DISTANCE 0.0
+AREA 1187.7
+D 59.0
+A 1179.9
+LENGTH 59
+...
+FINISH
+```
+
+Connected as: ELEM C2 LINK 2 3
+
+Decision: Nodes 2 and 3 need evaluation based on other criteria
+Variable property affects internal calculation but doesn't change node requirements
+
+5.4 EDGE CASE: HIGH NODE NUMBERS FOR SPECIAL ELEMENTS
+------------------------------------------------------
+Some files use high node numbers (100, 200, etc.) for surge tanks or special elements.
+
+Pattern:
+```
+ELEM O1 LINK 9 100
+ELEM ST1 AT 100        ← Node 100 is surge tank
+
+ELEM O1 LINK 15 200
+ELEM ST2 AT 200        ← Node 200 is surge tank
+```
+
+Decision: Treat these the same as any surge tank node → INCLUDE
+Don't exclude based on node number magnitude
+
+5.5 EDGE CASE: SAME ELEMENT ID REUSED
+--------------------------------------
+Pattern:
+```
+ELEM C3 LINK 3 4
+ELEM C3 LINK 4 5
+ELEM C3 LINK 5 6
+ELEM C3 LINK 6 7
+```
+
+All use same element ID "C3" → forms a continuous chain
+Nodes 4, 5, 6 are intermediate → SKIP
+Only keep endpoints and any junctions within the chain
+
+5.6 EDGE CASE: ELEMENT TYPE CHANGES WITHOUT JUNCTION
+-----------------------------------------------------
+Pattern:
+```
+ELEM HPS1 LINK 13 15
+ELEM VPS1 LINK 15 16    ← Type changes from HPS to VPS
+ELEM HPS2 LINK 16 17    ← Type changes from VPS to HPS
+```
+
+Decision: Nodes 15 and 16 are transition points
+Even without explicit JUNCTION, element type change indicates physical transition
+→ INCLUDE nodes 15 and 16
+
+Reasoning: Different element IDs suggest different pipe characteristics
+(HPS = horizontal penstock section, VPS = vertical penstock section)
+
+================================================================================
+SECTION 6: IMPLEMENTATION PSEUDOCODE
+================================================================================
+
+```
+FUNCTION determine_nodes_needing_elevations(system_section):
+    
+    // Step 1: Parse system section
+    nodes = parse_all_nodes(system_section)
+    connections = parse_all_connections(system_section)
+    
+    // Step 2: Initialize required nodes set
+    required_nodes = new Set()
+    
+    // Step 3: Add Category A nodes (mandatory)
+    
+    // A1: Reservoir nodes
+    reservoir_nodes = find_elements_with_pattern("ELEM * AT *", 
+                                                  element_type="RESERVOIR|RES|HW")
+    required_nodes.add_all(reservoir_nodes)
+    
+    // A2: Junction nodes
+    junction_nodes = find_lines_with_pattern("JUNCTION AT *")
+    required_nodes.add_all(junction_nodes)
+    
+    // A3: Boundary condition nodes
+    boundary_nodes = find_elements_with_pattern("ELEM * AT *",
+                                                 element_type="FBC|FLOWBC|FB|VALVE|TURBINE")
+    required_nodes.add_all(boundary_nodes)
+    
+    // A4: Surge tank nodes
+    surge_tank_nodes = find_elements_with_pattern("ELEM * AT *",
+                                                   element_type="ST|SURGETANK")
+    required_nodes.add_all(surge_tank_nodes)
+    
+    // A5: First nodes after reservoirs
+    for each reservoir_node in reservoir_nodes:
+        outgoing_links = find_links_from_node(reservoir_node)
+        for each link in outgoing_links:
+            required_nodes.add(link.destination_node)
+    
+    // Step 4: Analyze element type transitions
+    for each connection in connections:
+        if connection is LINK type:
+            source_node = connection.source
+            dest_node = connection.destination
+            element_id = connection.element_id
+            
+            // Check if destination connects to different element type
+            outgoing_from_dest = find_links_from_node(dest_node)
+            for each outgoing in outgoing_from_dest:
+                if outgoing.element_id != element_id:
+                    // Element type changes
+                    required_nodes.add(dest_node)
+    
+    // Step 5: Remove intermediate nodes in chains
+    for each node in nodes:
+        if node in required_nodes:
+            continue  // Already required, don't analyze
+        
+        incoming = find_links_to_node(node)
+        outgoing = find_links_from_node(node)
+        
+        // Check if intermediate node in chain
+        if incoming.length == 1 AND outgoing.length == 1:
+            if incoming[0].element_id == outgoing[0].element_id:
+                if NOT node in junction_nodes:
+                    // This is intermediate node, confirm not required
+                    // (should not be in required_nodes already)
+                    pass
+    
+    // Step 6: Handle dummy elements
+    dummy_connections = find_elements_with_pattern("ELEM * LINK * *",
+                                                     element_type="DUM|DUMMY")
+    for each dummy_conn in dummy_connections:
+        source = dummy_conn.source
+        dest = dummy_conn.destination
+        
+        // Check if nodes have other connections
+        source_other = find_non_dummy_connections(source)
+        dest_other = find_non_dummy_connections(dest)
+        
+        // Remove from required if ONLY connected to dummy (unless junction)
+        if source_other.length == 0 AND source NOT in junction_nodes:
+            required_nodes.remove(source)
+        if dest_other.length == 0 AND dest NOT in junction_nodes:
+            required_nodes.remove(dest)
+    
+    // Step 7: Sort and return
+    return sort_ascending(required_nodes)
+
+END FUNCTION
+```
+
+================================================================================
+SECTION 7: VALIDATION AND QUALITY CHECKS
+================================================================================
+
+7.1 POST-GENERATION VALIDATION CHECKLIST
+-----------------------------------------
+
+After generating node elevations, perform these checks:
+
+CHECK 1: Minimum Node Requirements
+□ At least one node (reservoir) is present
+□ All lines with "JUNCTION AT X" have corresponding "NODE X ELEV"
+□ All lines with "ELEM FBC* AT X" have corresponding "NODE X ELEV"
+□ All lines with "ELEM ST* AT X" have corresponding "NODE X ELEV"
+
+CHECK 2: Continuity Checks
+□ No "gaps" in flow path (every path from reservoir to boundary has nodes)
+□ First node after each reservoir has elevation
+□ Last node before each boundary condition has elevation
+
+CHECK 3: Reasonable Elevation Values
+□ Elevations decrease from reservoir to powerhouse (for conventional systems)
+□ No negative elevations (unless specified in original data)
+□ Surge tank node elevation ≈ SURGETANK ELBOTTOM value
+□ Junction elevations consistent with connected pipe elevations
+
+CHECK 4: Format Checks
+□ Nodes listed in ascending numerical order
+□ Consistent decimal precision (typically 1-2 decimal places)
+□ Proper syntax: "NODE [number] ELEV [value]"
+□ No duplicate node declarations
+
+7.2 COMMON ERRORS AND FIXES
+----------------------------
+
+ERROR 1: Too many node elevations (including intermediate nodes)
+FIX: Review chain of same element type, remove intermediate nodes
+Check for patterns like:
+```
+ELEM C3 LINK 3 4
+ELEM C3 LINK 4 5  ← Node 4 likely unnecessary
+ELEM C3 LINK 5 6  ← Node 5 likely unnecessary
+```
+
+ERROR 2: Missing junction node elevations
+FIX: Search for ALL "JUNCTION AT X" lines and ensure all have elevations
+This is NEVER optional
+
+ERROR 3: Missing boundary condition node elevations
+FIX: Search for ALL "ELEM FBC" or similar boundary elements
+Every boundary must have elevation
+
+ERROR 4: Surge tank node elevation conflicts
+FIX: Check SURGETANK element definition for ELBOTTOM
+Node elevation should match ELBOTTOM value
+
+ERROR 5: Nodes in wrong order
+FIX: Sort node declarations numerically ascending
+Not: NODE 11, NODE 2, NODE 18
+Correct: NODE 2, NODE 11, NODE 18
+
+ERROR 6: Dummy element nodes incorrectly included
+FIX: Trace dummy connections
+If node ONLY connects to dummy elements AND is NOT a junction, remove it
+
+7.3 CROSS-REFERENCE WITH ELEMENT PROPERTIES
+--------------------------------------------
+
+After generating node elevations, cross-check with element properties:
+
+For RESERVOIR elements:
+- Reservoir node elevation should be ≤ RESERVOIR ELEV property
+- Typical difference: 0-100m (node often at bottom of reservoir)
+
+For SURGETANK elements:
+- Surge tank node elevation should = ELBOTTOM property
+- If mismatch, software may give errors
+
+For CONDUIT elements:
+- First and last nodes of long conduits should have elevations
+- Intermediate nodes for straight sections can be interpolated
+
+================================================================================
+SECTION 8: OUTPUT FORMAT SPECIFICATION
+================================================================================
+
+8.1 STANDARD FORMAT
+-------------------
+
+```
+NODE [number] ELEV [elevation]
+```
+
+Where:
+- [number] is integer node number (1, 2, 3, ... or 100, 200 for special nodes)
+- [elevation] is decimal number with 1-2 decimal places
+- Units are typically meters (m) but depend on project
+
+8.2 SORTING REQUIREMENTS
+-------------------------
+
+ALWAYS sort nodes in ascending numerical order:
+
+CORRECT:
+```
+NODE 1 ELEV 6397.56
+NODE 2 ELEV 6296.019
+NODE 11 ELEV 6137.06
+NODE 13 ELEV 6137.06
+NODE 100 ELEV 5628.5
+```
+
+INCORRECT:
+```
+NODE 100 ELEV 5628.5
+NODE 1 ELEV 6397.56
+NODE 13 ELEV 6137.06
+NODE 2 ELEV 6296.019
+NODE 11 ELEV 6137.06
+```
+
+8.3 DECIMAL PRECISION
+----------------------
+
+Use consistent decimal precision:
+- Typical: 1-2 decimal places
+- Match precision of source data
+- Examples: 6296.01, 4289.65, 1354.6
+
+NOT recommended: Excessive precision (6296.0190000)
+
+8.4 COMPLETE EXAMPLE OUTPUT
+----------------------------
+
+```
+C **************************************************************************
+C NODE ELEVATIONS
+
+NODE 2 ELEV 6296.019
+NODE 11 ELEV 6137.06
+NODE 13 ELEV 6137.06
+NODE 14 ELEV 6137.06
+NODE 15 ELEV 6131.815
+NODE 16 ELEV 4289.65
+NODE 17 ELEV 4289.65
+NODE 18 ELEV 4289.65
+NODE 19 ELEV 4289.65
+NODE 20 ELEV 6131.815
+NODE 21 ELEV 4289.65
+NODE 22 ELEV 4289.65
+NODE 23 ELEV 4289.65
+NODE 24 ELEV 4289.65
+NODE 25 ELEV 6131.815
+NODE 26 ELEV 4289.65
+NODE 27 ELEV 4289.65
+NODE 28 ELEV 4289.65
+NODE 29 ELEV 4289.65
+
+FINISH
+```
+
+Note: Section ends with "FINISH" keyword
+
+================================================================================
+SECTION 9: QUICK REFERENCE DECISION TREE
+================================================================================
+
+For any node N, use this decision tree:
+
+START
+  |
+  ├─ Is there "JUNCTION AT N" in SYSTEM section?
+  │   └─ YES → INCLUDE NODE N ✓
+  │
+  ├─ Is there "ELEM [RESERVOIR] AT N" in SYSTEM section?
+  │   └─ YES → INCLUDE NODE N ✓
+  │
+  ├─ Is there "ELEM [FBC/FLOWBC/FB] AT N" in SYSTEM section?
+  │   └─ YES → INCLUDE NODE N ✓
+  │
+  ├─ Is there "ELEM [ST/SURGETANK] AT N" in SYSTEM section?
+  │   └─ YES → INCLUDE NODE N ✓
+  │
+  ├─ Is N the first node after a reservoir?
+  │   └─ YES → INCLUDE NODE N ✓
+  │
+  ├─ Does element type change at node N?
+  │   (Different ELEM IDs in "LINK ... N" and "LINK N ...")
+  │   └─ YES → INCLUDE NODE N ✓
+  │
+  ├─ Is N only in "ELEM DUMMY LINK ..." connections?
+  │   └─ YES → SKIP NODE N ✗
+  │
+  ├─ Is N in middle of chain with same element type?
+  │   (Same ELEM ID in "LINK A N" and "LINK N B")
+  │   └─ YES → SKIP NODE N ✗
+  │
+  └─ Default for unclear cases → INCLUDE NODE N ✓
+      (Better to include extra than miss required nodes)
+
+================================================================================
+SECTION 10: SUMMARY OF KEY PRINCIPLES
+================================================================================
+
+1. ALWAYS INCLUDE:
+   - Reservoir connection nodes
+   - Nodes with "JUNCTION AT" declarations
+   - Nodes with boundary conditions (FLOWBC, FBC, FB, VALVE)
+   - Nodes with surge tanks (ST, SURGETANK)
+   - First node after each reservoir
+
+2. USUALLY INCLUDE:
+   - Nodes where element type changes
+   - Nodes at major system transitions
+   - Endpoints of parallel flow paths
+
+3. USUALLY SKIP:
+   - Intermediate nodes in chains of same element type
+   - Nodes only connected to DUMMY elements (unless junctions)
+   - Through-flow nodes with one inlet, one outlet, same type
+
+4. WHEN IN DOUBT:
+   - Include the node (safer to have extra than miss required)
+   - Check if node appears in HISTORY/PLOT sections (suggests importance)
+   - Verify against similar example files
+
+5. VALIDATION:
+   - Every junction MUST have elevation
+   - Every boundary MUST have elevation
+   - Every surge tank MUST have elevation
+   - Nodes must be in ascending numerical order
+   - Cross-check with element property definitions
+
+================================================================================
+END OF COMPREHENSIVE GUIDE
+================================================================================
+
+This guide provides complete rules for determining node elevation requirements
+in hydraulic transient analysis .INP files. Apply these rules systematically
+to any network topology to generate correct, complete node elevation sections.
