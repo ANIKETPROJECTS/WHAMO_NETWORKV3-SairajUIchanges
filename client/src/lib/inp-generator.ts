@@ -385,6 +385,8 @@
 //   saveAs(blob, `network_${Date.now()}.inp`);
 // }
 
+////////////////////////////////////////
+
 import { WhamoNode, WhamoEdge, useNetworkStore } from "./store";
 import { saveAs } from "file-saver";
 
@@ -392,15 +394,127 @@ export function generateInpFile(nodes: WhamoNode[], edges: WhamoEdge[]) {
   const state = useNetworkStore.getState();
   const lines: string[] = [];
 
-  // Helper to add line
-  const add = (str: string) => lines.push(str);
-  const addComment = (comment?: string) => {
-    if (comment) {
-      add(`c ${comment}`);
-    }
+  const addL = (str: string = "") => lines.push(str);
+
+  /* --------------------------------------------------------------------- */
+  /* HELPERS                                                               */
+  /* --------------------------------------------------------------------- */
+
+  const getActualNodeId = (internalId: string): string => {
+    const node = nodes.find((n) => n.id === internalId);
+    return node?.data.nodeNumber?.toString() || internalId;
   };
 
-  const addL = (str: string) => lines.push(str);
+  const getElevation = (nodeId: string): number | null => {
+    const node = nodes.find((n) => getActualNodeId(n.id) === nodeId);
+    if (!node || node.data.elevation === undefined) return null;
+
+    return typeof node.data.elevation === "number"
+      ? node.data.elevation
+      : parseFloat(node.data.elevation);
+  };
+
+  const isSpecialNode = (nodeId: string): boolean => {
+    const node = nodes.find((n) => getActualNodeId(n.id) === nodeId);
+    if (!node) return false;
+
+    return (
+      node.type === "reservoir" ||
+      node.type === "junction" ||
+      node.type === "flowBoundary" ||
+      node.type === "surgeTank"
+    );
+  };
+
+  /* --------------------------------------------------------------------- */
+  /* CONNECTION MAP                                                        */
+  /* --------------------------------------------------------------------- */
+
+  const nodeConnections: Record<
+    string,
+    { incoming: WhamoEdge[]; outgoing: WhamoEdge[] }
+  > = {};
+
+  nodes.forEach((node) => {
+    nodeConnections[getActualNodeId(node.id)] = { incoming: [], outgoing: [] };
+  });
+
+  edges.forEach((edge) => {
+    const fromId = getActualNodeId(edge.source);
+    const toId = getActualNodeId(edge.target);
+
+    if (!nodeConnections[fromId])
+      nodeConnections[fromId] = { incoming: [], outgoing: [] };
+    if (!nodeConnections[toId])
+      nodeConnections[toId] = { incoming: [], outgoing: [] };
+
+    nodeConnections[fromId].outgoing.push(edge);
+    nodeConnections[toId].incoming.push(edge);
+  });
+
+  /* --------------------------------------------------------------------- */
+  /* NODE SELECTION (CHAIN SKIPPING LOGIC)                                 */
+  /* --------------------------------------------------------------------- */
+
+  const nodesToInclude = new Set<string>();
+
+  Object.keys(nodeConnections).forEach((nodeId) => {
+    const conns = nodeConnections[nodeId];
+
+    /* ALWAYS KEEP SPECIAL NODES */
+    if (isSpecialNode(nodeId)) {
+      nodesToInclude.add(nodeId);
+      return;
+    }
+
+    /* KEEP TRUE JUNCTIONS BY CONNECTIVITY */
+    if (conns.incoming.length > 1 || conns.outgoing.length > 1) {
+      nodesToInclude.add(nodeId);
+      return;
+    }
+
+    /* SERIAL NODE → CHECK CHAIN RULE */
+    if (conns.incoming.length === 1 && conns.outgoing.length === 1) {
+      const inEdge = conns.incoming[0];
+      const outEdge = conns.outgoing[0];
+
+      const inType = inEdge.data?.type || "conduit";
+      const outType = outEdge.data?.type || "conduit";
+
+      const inLabel = inEdge.data?.label;
+      const outLabel = outEdge.data?.label;
+
+      const isPureChain =
+        inType === "conduit" &&
+        outType === "conduit" &&
+        inLabel &&
+        outLabel &&
+        inLabel === outLabel;
+
+      if (!isPureChain) {
+        nodesToInclude.add(nodeId);
+      }
+
+      return;
+    }
+
+    /* DEAD-END / OTHER → KEEP */
+    nodesToInclude.add(nodeId);
+  });
+
+  /* FORCE INCLUDE OUTPUT REQUEST NODES */
+  state.outputRequests.forEach((req) => {
+    if (req.elementType === "node") {
+      const node = nodes.find((n) => n.id === req.elementId);
+      if (node) {
+        nodesToInclude.add(getActualNodeId(node.id));
+      }
+    }
+  });
+
+  /* --------------------------------------------------------------------- */
+  /* HEADER                                                                */
+  /* --------------------------------------------------------------------- */
 
   addL("c Project Name");
   addL("C  SYSTEM CONNECTIVITY");
@@ -408,680 +522,63 @@ export function generateInpFile(nodes: WhamoNode[], edges: WhamoEdge[]) {
   addL("SYSTEM");
   addL("");
 
-  // ============================================================================
-  // CONNECTIVITY SECTION
-  // ============================================================================
-  const visitedNodes = new Set<string>();
+  /* --------------------------------------------------------------------- */
+  /* CONNECTIVITY                                                          */
+  /* --------------------------------------------------------------------- */
+
   const visitedEdges = new Set<string>();
-  const connectivityLines: string[] = [];
-  const nodeIdsWithSpecialElements = new Set<string>();
 
-  function traverse(nodeId: string) {
-    if (visitedNodes.has(nodeId)) return;
-    visitedNodes.add(nodeId);
+  nodes.forEach((node) => {
+    const nodeId = getActualNodeId(node.id);
 
-    const node = nodes.find((n) => n.id === nodeId);
-    if (!node) return;
-
-    const actualNodeId = node.data.nodeNumber?.toString() || node.id;
-
-    // Elements AT this node
     if (
       node.type === "reservoir" ||
       node.type === "surgeTank" ||
       node.type === "flowBoundary"
     ) {
-      connectivityLines.push(`ELEM ${node.data.label} AT ${actualNodeId}`);
-      nodeIdsWithSpecialElements.add(actualNodeId);
-    }
-
-    // Outgoing edges
-    const outgoingEdges = edges.filter((e) => e.source === nodeId);
-
-    if (outgoingEdges.length > 0) {
-      if (node.type === "junction" || outgoingEdges.length > 1) {
-        connectivityLines.push("");
-        connectivityLines.push(`JUNCTION AT ${actualNodeId}`);
-        connectivityLines.push("");
-        nodeIdsWithSpecialElements.add(actualNodeId);
-      }
-
-      outgoingEdges.forEach((edge) => {
-        if (visitedEdges.has(edge.id)) return;
-        visitedEdges.add(edge.id);
-
-        const toNode = nodes.find((n) => n.id === edge.target);
-        const toId =
-          toNode?.data.nodeNumber?.toString() || toNode?.id || edge.target;
-        const fromId = actualNodeId;
-
-        connectivityLines.push(
-          `ELEM ${edge.data?.label || edge.id} LINK ${fromId} ${toId}`,
-        );
-        traverse(edge.target);
-      });
-    }
-  }
-
-  // Start traversal from reservoirs
-  const reservoirs = nodes.filter((n) => n.type === "reservoir");
-  reservoirs.forEach((r) => traverse(r.id));
-
-  // Handle any disconnected components
-  nodes.forEach((n) => {
-    if (!visitedNodes.has(n.id)) {
-      if (n.type === "surgeTank" || n.type === "flowBoundary") {
-        const actualNodeId = n.data.nodeNumber?.toString() || n.id;
-        connectivityLines.push(`ELEM ${n.data.label} AT ${actualNodeId}`);
-        nodeIdsWithSpecialElements.add(actualNodeId);
-      }
+      addL(`ELEM ${node.data.label} AT ${nodeId}`);
     }
   });
 
-  connectivityLines.forEach((line) => addL(line));
-
-  // ============================================================================
-  // NODE ELEVATION SELECTION - COMPREHENSIVE ALGORITHM
-  // Following the detailed guide rules
-  // ============================================================================
-
-  // STEP 1: Parse and create data structures
-  const nodesToInclude = new Set<string>();
-
-  // Create mapping of internal ID to actual node number
-  const getActualNodeId = (internalId: string): string => {
-    const node = nodes.find((n) => n.id === internalId);
-    return node?.data.nodeNumber?.toString() || internalId;
-  };
-
-  // Build comprehensive connection map
-  interface Connection {
-    elemId: string;
-    elemType: string;
-    edge: WhamoEdge;
-    sourceNodeId: string;
-    targetNodeId: string;
-  }
-
-  const nodeConnections: Record<
-    string,
-    {
-      incoming: Connection[];
-      outgoing: Connection[];
-    }
-  > = {};
-
-  // Initialize connection map for all nodes
-  nodes.forEach((node) => {
-    const actualNodeId = getActualNodeId(node.id);
-    if (!nodeConnections[actualNodeId]) {
-      nodeConnections[actualNodeId] = { incoming: [], outgoing: [] };
-    }
-  });
-
-  // Build connections from edges
   edges.forEach((edge) => {
-    const fromNode = nodes.find((n) => n.id === edge.source);
-    const toNode = nodes.find((n) => n.id === edge.target);
-    if (!fromNode || !toNode) return;
+    if (visitedEdges.has(edge.id)) return;
+    visitedEdges.add(edge.id);
 
     const fromId = getActualNodeId(edge.source);
     const toId = getActualNodeId(edge.target);
-    const elemId = edge.data?.label || edge.id;
-    const elemType = edge.data?.type || "conduit";
+    const label = edge.data?.label || edge.id;
 
-    if (!nodeConnections[fromId])
-      nodeConnections[fromId] = { incoming: [], outgoing: [] };
-    if (!nodeConnections[toId])
-      nodeConnections[toId] = { incoming: [], outgoing: [] };
-
-    const connection: Connection = {
-      elemId,
-      elemType,
-      edge,
-      sourceNodeId: fromId,
-      targetNodeId: toId,
-    };
-
-    nodeConnections[fromId].outgoing.push(connection);
-    nodeConnections[toId].incoming.push(connection);
+    addL(`ELEM ${label} LINK ${fromId} ${toId}`);
   });
-
-  // STEP 2: Identify special node categories
-  const reservoirNodes = new Set<string>();
-  const junctionNodes = new Set<string>();
-  const boundaryNodes = new Set<string>();
-  const surgeTankNodes = new Set<string>();
-  const dummyOnlyNodes = new Set<string>();
-
-  nodes.forEach((node) => {
-    const actualNodeId = getActualNodeId(node.id);
-
-    // A1: Reservoir nodes
-    if (node.type === "reservoir") {
-      reservoirNodes.add(actualNodeId);
-    }
-
-    // A2: Junction nodes
-    if (node.type === "junction") {
-      junctionNodes.add(actualNodeId);
-    }
-
-    // A3: Boundary condition nodes
-    if (node.type === "flowBoundary") {
-      boundaryNodes.add(actualNodeId);
-    }
-
-    // A4: Surge tank nodes
-    if (node.type === "surgeTank") {
-      surgeTankNodes.add(actualNodeId);
-    }
-  });
-
-  // Identify nodes only connected to DUMMY elements (C2)
-  Object.keys(nodeConnections).forEach((nodeId) => {
-    const connections = nodeConnections[nodeId];
-    const allConnections = [...connections.incoming, ...connections.outgoing];
-
-    if (allConnections.length > 0) {
-      const allDummy = allConnections.every(
-        (conn) => conn.elemType === "dummy",
-      );
-      if (allDummy) {
-        dummyOnlyNodes.add(nodeId);
-      }
-    }
-  });
-
-  // STEP 3: Apply CATEGORY A rules (MANDATORY - ALWAYS INCLUDE)
-
-  // A1: Add all reservoir nodes
-  reservoirNodes.forEach((nodeId) => {
-    nodesToInclude.add(nodeId);
-  });
-
-  // A2: Add all junction nodes
-  junctionNodes.forEach((nodeId) => {
-    nodesToInclude.add(nodeId);
-  });
-
-  // A3: Add all boundary condition nodes
-  boundaryNodes.forEach((nodeId) => {
-    nodesToInclude.add(nodeId);
-  });
-
-  // A4: Add all surge tank nodes
-  surgeTankNodes.forEach((nodeId) => {
-    nodesToInclude.add(nodeId);
-  });
-
-  // A5: Add first nodes after each reservoir
-  reservoirNodes.forEach((reservoirNodeId) => {
-    const connections = nodeConnections[reservoirNodeId];
-    if (connections && connections.outgoing.length > 0) {
-      connections.outgoing.forEach((conn) => {
-        // Add the immediate downstream node after reservoir
-        nodesToInclude.add(conn.targetNodeId);
-      });
-    }
-  });
-
-  // STEP 4: Detect junctions by connectivity (not just explicit type)
-  // A junction is also any node with more than 2 total connections
-  Object.keys(nodeConnections).forEach((nodeId) => {
-    const connections = nodeConnections[nodeId];
-    const totalConnections =
-      connections.incoming.length + connections.outgoing.length;
-
-    // If more than 2 connections (1 in, 1 out), it's a junction
-    if (totalConnections > 2) {
-      nodesToInclude.add(nodeId);
-      junctionNodes.add(nodeId); // Track as junction
-    }
-
-    // Special case: multiple outgoing OR multiple incoming = junction
-    if (connections.outgoing.length > 1 || connections.incoming.length > 1) {
-      nodesToInclude.add(nodeId);
-      junctionNodes.add(nodeId);
-    }
-  });
-
-  // STEP 5: Apply CATEGORY B rules (CONDITIONAL)
-
-  // B1: Major transition nodes - where element type changes
-  Object.keys(nodeConnections).forEach((nodeId) => {
-    // Skip if already included
-    if (nodesToInclude.has(nodeId)) return;
-
-    const connections = nodeConnections[nodeId];
-
-    // Check for element type change at this node
-    if (
-      connections.incoming.length === 1 &&
-      connections.outgoing.length === 1
-    ) {
-      const inConn = connections.incoming[0];
-      const outConn = connections.outgoing[0];
-
-      // Different element IDs suggest different physical sections
-      if (inConn.elemId !== outConn.elemId) {
-        nodesToInclude.add(nodeId);
-        return;
-      }
-
-      // Check for property changes (diameter, celerity, friction)
-      const inEdge = inConn.edge;
-      const outEdge = outConn.edge;
-
-      if (inEdge.data && outEdge.data) {
-        if (
-          inEdge.data.diameter !== outEdge.data.diameter ||
-          inEdge.data.celerity !== outEdge.data.celerity ||
-          inEdge.data.friction !== outEdge.data.friction
-        ) {
-          nodesToInclude.add(nodeId);
-          return;
-        }
-      }
-    }
-
-    // If multiple incoming or outgoing with different element types
-    const incomingElemIds = new Set(connections.incoming.map((c) => c.elemId));
-    const outgoingElemIds = new Set(connections.outgoing.map((c) => c.elemId));
-
-    if (incomingElemIds.size > 1 || outgoingElemIds.size > 1) {
-      nodesToInclude.add(nodeId);
-      return;
-    }
-  });
-
-  // B2: Nodes in output requests
-  state.outputRequests.forEach((req) => {
-    if (req.elementType === "node") {
-      const node = nodes.find((n) => n.id === req.elementId);
-      if (node) {
-        const actualNodeId = getActualNodeId(node.id);
-        nodesToInclude.add(actualNodeId);
-      }
-    }
-  });
-
-  // STEP 6: Apply CATEGORY C rules (EXCLUSIONS)
-
-  // C2: Remove dummy-only nodes (unless they're junctions or special elements)
-  dummyOnlyNodes.forEach((nodeId) => {
-    // Only remove if NOT a junction, reservoir, boundary, or surge tank
-    if (
-      !junctionNodes.has(nodeId) &&
-      !reservoirNodes.has(nodeId) &&
-      !boundaryNodes.has(nodeId) &&
-      !surgeTankNodes.has(nodeId)
-    ) {
-      nodesToInclude.delete(nodeId);
-    }
-  });
-
-  // C1 & C4: Identify and remove intermediate nodes in chains
-  // An intermediate node is one that:
-  // - Has exactly 1 incoming and 1 outgoing connection
-  // - Both connections use the same element ID
-  // - Is not a junction, boundary, reservoir, or surge tank
-  // - Is not a transition point
-  Object.keys(nodeConnections).forEach((nodeId) => {
-    const connections = nodeConnections[nodeId];
-
-    // Must have exactly 1 in and 1 out
-    if (
-      connections.incoming.length !== 1 ||
-      connections.outgoing.length !== 1
-    ) {
-      return;
-    }
-
-    const inConn = connections.incoming[0];
-    const outConn = connections.outgoing[0];
-
-    // Same element ID (same conduit/pipe)
-    if (inConn.elemId === outConn.elemId) {
-      // Not a special node
-      if (
-        !junctionNodes.has(nodeId) &&
-        !reservoirNodes.has(nodeId) &&
-        !boundaryNodes.has(nodeId) &&
-        !surgeTankNodes.has(nodeId)
-      ) {
-        // This is an intermediate node - remove it
-        nodesToInclude.delete(nodeId);
-      }
-    }
-  });
-
-  // STEP 7: Handle special case - nodes connected to dummy elements
-  // but also connected to real elements should be kept
-  dummyOnlyNodes.forEach((nodeId) => {
-    const connections = nodeConnections[nodeId];
-    const allConnections = [...connections.incoming, ...connections.outgoing];
-
-    // Check if ANY connection is non-dummy
-    const hasRealConnection = allConnections.some(
-      (conn) => conn.elemType !== "dummy",
-    );
-
-    if (hasRealConnection) {
-      // This node connects to real elements, check if it should be included
-      if (
-        junctionNodes.has(nodeId) ||
-        reservoirNodes.has(nodeId) ||
-        boundaryNodes.has(nodeId) ||
-        surgeTankNodes.has(nodeId)
-      ) {
-        nodesToInclude.add(nodeId);
-      }
-    }
-  });
-
-  // STEP 8: Final validation - ensure no essential nodes are missing
-
-  // Ensure all junction nodes are included (CRITICAL)
-  junctionNodes.forEach((nodeId) => {
-    if (!nodesToInclude.has(nodeId)) {
-      console.warn(`Adding missing junction node: ${nodeId}`);
-      nodesToInclude.add(nodeId);
-    }
-  });
-
-  // Ensure all reservoir nodes are included (CRITICAL)
-  reservoirNodes.forEach((nodeId) => {
-    if (!nodesToInclude.has(nodeId)) {
-      console.warn(`Adding missing reservoir node: ${nodeId}`);
-      nodesToInclude.add(nodeId);
-    }
-  });
-
-  // Ensure all boundary nodes are included (CRITICAL)
-  boundaryNodes.forEach((nodeId) => {
-    if (!nodesToInclude.has(nodeId)) {
-      console.warn(`Adding missing boundary node: ${nodeId}`);
-      nodesToInclude.add(nodeId);
-    }
-  });
-
-  // Ensure all surge tank nodes are included (CRITICAL)
-  surgeTankNodes.forEach((nodeId) => {
-    if (!nodesToInclude.has(nodeId)) {
-      console.warn(`Adding missing surge tank node: ${nodeId}`);
-      nodesToInclude.add(nodeId);
-    }
-  });
-
-  // ============================================================================
-  // OUTPUT NODE ELEVATIONS
-  // ============================================================================
 
   addL("");
 
-  // Sort nodes in ascending numerical order
-  const sortedNodeIds = Array.from(nodesToInclude).sort((a, b) => {
-    const numA = parseInt(a);
-    const numB = parseInt(b);
-    if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-    return a.localeCompare(b);
-  });
+  /* --------------------------------------------------------------------- */
+  /* NODE ELEVATIONS                                                       */
+  /* --------------------------------------------------------------------- */
 
-  // Output node elevations with proper formatting
-  sortedNodeIds.forEach((nodeId) => {
-    // Find the actual node object
-    const node = nodes.find((n) => getActualNodeId(n.id) === nodeId);
+  Array.from(nodesToInclude)
+    .sort((a, b) => parseInt(a) - parseInt(b))
+    .forEach((nodeId) => {
+      const elev = getElevation(nodeId);
 
-    if (node && node.data.elevation !== undefined) {
-      const elev =
-        typeof node.data.elevation === "number"
-          ? node.data.elevation.toFixed(1)
-          : parseFloat(node.data.elevation).toFixed(1);
-      addL(`    NODE ${nodeId} ELEV ${elev}`);
-    } else {
-      // Node not found or no elevation - this shouldn't happen but log warning
-      console.warn(
-        `Node ${nodeId} selected for elevation but has no elevation data`,
-      );
-    }
-  });
+      if (elev !== null) {
+        addL(`    NODE ${nodeId} ELEV ${elev.toFixed(1)}`);
+      }
+    });
 
   addL("");
   addL("FINISH");
   addL("");
 
-  // ============================================================================
-  // ELEMENT PROPERTIES SECTION
-  // ============================================================================
-
-  addL("C ELEMENT PROPERTIES");
-  addL("");
-
-  const exportedConduitLabels = new Set<string>();
-
-  // Reservoirs
-  nodes
-    .filter((n) => n.type === "reservoir")
-    .forEach((n) => {
-      addComment(n.data.comment);
-      addL("RESERVOIR");
-      addL(` ID ${n.data.label}`);
-      addL(` ELEV ${n.data.elevation}`);
-      addL(" FINISH");
-      addL("");
-    });
-
-  // Conduits
-  edges
-    .filter((e) => e.data?.type === "conduit")
-    .forEach((e) => {
-      const d = e.data;
-      if (!d) return;
-
-      const label = d.label || e.id;
-      if (exportedConduitLabels.has(label)) return;
-      exportedConduitLabels.add(label);
-
-      addComment(d.comment);
-      addL("CONDUIT");
-      addL(` ID ${label}`);
-
-      if (d.variable) {
-        addL(" VARIABLE");
-        if (d.distance !== undefined) addL(` DISTANCE ${d.distance}`);
-        if (d.area !== undefined) addL(` AREA ${d.area}`);
-        if (d.d !== undefined) addL(` D ${d.d}`);
-        if (d.a !== undefined) addL(` A ${d.a}`);
-      }
-
-      addL(` LENGTH ${d.length}`);
-      if (!d.variable && d.diameter !== undefined) {
-        addL(` DIAM ${d.diameter}`);
-      }
-      if (d.celerity !== undefined) addL(` CELERITY ${d.celerity}`);
-      if (d.friction !== undefined) addL(` FRICTION ${d.friction}`);
-
-      if (d.cplus !== undefined || d.cminus !== undefined) {
-        addL(" ADDEDLOSS");
-        if (d.cplus !== undefined) addL(`     CPLUS ${d.cplus.toFixed(2)}`);
-        if (d.cminus !== undefined) addL(`     CMINUS ${d.cminus.toFixed(2)}`);
-      }
-
-      if (d.numSegments !== undefined) {
-        addL(` NUMSEG ${d.numSegments}`);
-      }
-      addL(" FINISH");
-      addL("");
-    });
-
-  // Dummy conduits
-  edges
-    .filter((e) => e.data?.type === "dummy")
-    .forEach((e) => {
-      const d = e.data;
-      if (!d) return;
-      const label = d.label || e.id;
-      if (exportedConduitLabels.has(label)) return;
-      exportedConduitLabels.add(label);
-
-      addComment(d.comment);
-      addL("CONDUIT");
-      addL(` ID ${label}`);
-      addL(" DUMMY");
-      if (d.diameter !== undefined) addL(` DIAM ${d.diameter}`);
-      if (d.cplus !== undefined || d.cminus !== undefined) {
-        addL(" ADDEDLOSS");
-        if (d.cplus !== undefined) addL(`     CPLUS ${d.cplus}`);
-        if (d.cminus !== undefined) addL(`     CMINUS ${d.cminus}`);
-      }
-      addL(" FINISH");
-      addL("");
-    });
-
-  // Surge tanks
-  nodes
-    .filter((n) => n.type === "surgeTank")
-    .forEach((n) => {
-      const d = n.data;
-      if (!d) return;
-      addComment(d.comment);
-      addL("SURGETANK");
-      addL(` ID ${d.label} SIMPLE`);
-      addL(` ELBOTTOM ${d.bottomElevation}`);
-      addL(` ELTOP ${d.topElevation}`);
-      addL(` DIAM ${d.diameter}`);
-      addL(` CELERITY ${d.celerity}`);
-      addL(` FRICTION ${d.friction}`);
-      addL(" FINISH");
-      addL("");
-    });
-
-  // Flow boundaries
-  nodes
-    .filter((n) => n.type === "flowBoundary")
-    .forEach((n) => {
-      const d = n.data;
-      if (!d) return;
-      addComment(d.comment);
-      addL("FLOWBC");
-      addL(` ID ${d.label}`);
-      addL(` QSCHEDULE ${d.scheduleNumber}`);
-      addL(" FINISH");
-      addL("");
-    });
-
-  // ============================================================================
-  // SCHEDULES SECTION
-  // ============================================================================
-
-  addL("C TURBINE CHARACTERISTICS");
-  addL("");
-  addL("SCHEDULE");
-  addL("");
-
-  const flowBoundaries = nodes.filter((n) => n.type === "flowBoundary");
-  flowBoundaries.forEach((n) => {
-    const d = n.data;
-    addL(` QSCHEDULE ${d.scheduleNumber}`);
-
-    if (
-      d.schedulePoints &&
-      Array.isArray(d.schedulePoints) &&
-      d.schedulePoints.length > 0
-    ) {
-      d.schedulePoints.forEach((p: any) => {
-        addL(`     T ${p.time} Q ${p.flow}`);
-      });
-    } else {
-      // Default schedule
-      addL("     T 0.0 Q 3000");
-      addL("     T 20.0 Q 0");
-      addL("     T 3000 Q 0");
-    }
-    addL(" FINISH");
-    addL("");
-  });
-
-  addL("");
-
-  // ============================================================================
-  // OUTPUT REQUESTS SECTION
-  // ============================================================================
-
-  addL("C OUTPUT REQUESTS");
-  addL("");
-
-  const requestsByType = state.outputRequests.reduce(
-    (acc, req) => {
-      if (!acc[req.requestType]) acc[req.requestType] = [];
-      acc[req.requestType].push(req);
-      return acc;
-    },
-    {} as Record<string, typeof state.outputRequests>,
-  );
-
-  const requestTypes = Object.keys(requestsByType);
-
-  if (requestTypes.length > 0) {
-    requestTypes.forEach((type) => {
-      addL(type);
-      requestsByType[type].forEach((req) => {
-        const element =
-          req.elementType === "node"
-            ? nodes.find((n) => n.id === req.elementId)
-            : edges.find((e) => e.id === req.elementId);
-
-        const isSurgeTank =
-          req.elementType === "node" && element?.type === "surgeTank";
-        const label = isSurgeTank
-          ? element?.data?.label || element?.id || req.elementId
-          : element?.data?.nodeNumber ||
-            element?.data?.label ||
-            element?.id ||
-            req.elementId;
-        const typeStr = isSurgeTank ? "ELEM" : "NODE";
-        addL(` ${typeStr} ${label} ${req.variables.join(" ")}`);
-      });
-      addL(" FINISH");
-      addL("");
-    });
-
-    if (requestTypes.length > 1) {
-      addL(" DISPLAY");
-      addL("  ALL");
-      addL(" FINISH");
-      addL("");
-    }
-  } else {
-    // Default output requests
-    addL(" HISTORY");
-    addL("  NODE 2 Q HEAD");
-    addL("  ELEM ST Q ELEV");
-    addL(" FINISH");
-    addL("");
-  }
-
-  // ============================================================================
-  // COMPUTATIONAL PARAMETERS
-  // ============================================================================
-
-  addL("C COMPUTATIONAL PARAMETERS");
-  addL(" CONTROL");
-  const cp = state.computationalParams;
-  addL(` DTCOMP ${cp.dtcomp} DTOUT ${cp.dtout} TMAX ${cp.tmax}`);
-  addL(" FINISH");
-  addL("");
-
-  // ============================================================================
-  // EXECUTION CONTROL
-  // ============================================================================
+  /* --------------------------------------------------------------------- */
+  /* EXECUTION CONTROL                                                     */
+  /* --------------------------------------------------------------------- */
 
   addL("C EXECUTION CONTROL");
   addL("GO");
   addL("GOODBYE");
 
-  // Save file
   const blob = new Blob([lines.join("\n")], {
     type: "text/plain;charset=utf-8",
   });
